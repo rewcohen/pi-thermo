@@ -99,6 +99,56 @@
             color: white;
         }
 
+        .status-value.energy-active {
+            color: #ff6b6b;
+            font-weight: bold;
+        }
+
+        .status-value.energy-inactive {
+            color: #51cf66;
+            font-weight: bold;
+        }
+
+        .override-btn {
+            background: #ff8800;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 14px;
+            width: 100%;
+            max-width: 280px;
+        }
+
+        .override-btn:hover {
+            background: #ff9900;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 136, 0, 0.3);
+        }
+
+        .override-btn:disabled {
+            background: #999;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .energy-saving-controls {
+            margin-top: 15px;
+        }
+
+        .energy-info {
+            margin-top: 8px;
+            color: #666;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
         .control-section {
             background: #f8f9fa;
             border-radius: 15px;
@@ -321,12 +371,24 @@
                 <span class="status-value" id="targetTemp">--</span>
             </div>
             <div class="status-item">
+                <span class="status-label">Outside Temperature</span>
+                <span class="status-value" id="outsideTemp">--</span>
+            </div>
+            <div class="status-item">
                 <span class="status-label">Humidity</span>
                 <span class="status-value humidity" id="humidity">--</span>
             </div>
             <div class="status-item">
                 <span class="status-label">Heating Status</span>
                 <span class="heating-status" id="heatingStatus">--</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Energy Saving</span>
+                <span class="status-value" id="energySaving">--</span>
+            </div>
+            <div class="status-item" id="thermalRateItem" style="display: none;">
+                <span class="status-label">Thermal Rate</span>
+                <span class="status-value" id="thermalRate">--</span>
             </div>
         </div>
 
@@ -339,6 +401,16 @@
                 <button id="setBtn">Set</button>
             </div>
             <div id="message"></div>
+            
+            <br>
+            
+            <label class="control-label">Energy Saving Mode</label>
+            <div class="energy-saving-controls">
+                <button id="overrideBtn" class="override-btn">Override Energy Save (1hr)</button>
+                <div class="energy-info">
+                    <small>Override allows heating to target temp for 1 hour, then returns to energy saving mode.</small>
+                </div>
+            </div>
         </div>
 
         <!-- Events Section -->
@@ -396,6 +468,10 @@
                 document.getElementById('tempInput').value = data.target_temp_f.toFixed(1);
             }
             
+            // Update outside temperature
+            document.getElementById('outsideTemp').textContent = 
+                data.outside_temp_f !== null ? data.outside_temp_f.toFixed(1) + '°F' : '--';
+            
             // Update humidity
             document.getElementById('humidity').textContent = 
                 data.humidity !== null ? data.humidity.toFixed(0) + '%' : '--';
@@ -408,6 +484,40 @@
             } else {
                 statusEl.textContent = '❄️ OFF';
                 statusEl.className = 'heating-status off';
+            }
+            
+            // Update energy saving status
+            const energyEl = document.getElementById('energySaving');
+            if (data.energy_saving_override) {
+                energyEl.textContent = '⚡ OVERRIDDEN';
+                energyEl.className = 'status-value energy-active';
+            } else if (data.energy_saving_active) {
+                energyEl.textContent = '🌱 ACTIVE';
+                energyEl.className = 'status-value energy-active';
+            } else {
+                energyEl.textContent = '❄️ INACTIVE';
+                energyEl.className = 'status-value energy-inactive';
+            }
+            
+            // Update thermal rate if available
+            const thermalItem = document.getElementById('thermalRateItem');
+            const thermalRateEl = document.getElementById('thermalRate');
+            if (data.thermal_data) {
+                thermalItem.style.display = 'flex';
+                if (data.heating_on && data.thermal_data.heating_rate_seconds_per_degree) {
+                    const rate_min = data.thermal_data.heating_rate_seconds_per_degree / 60;
+                    thermalRateEl.textContent = `Heat: ${rate_min.toFixed(1)}°/min`;
+                    thermalRateEl.className = 'status-value temp';
+                } else if (!data.heating_on && data.thermal_data.cooling_rate_seconds_per_degree) {
+                    const rate_min = data.thermal_data.cooling_rate_seconds_per_degree / 60;
+                    thermalRateEl.textContent = `Cool: ${rate_min.toFixed(1)}°/min`;
+                    thermalRateEl.className = 'status-value temp';
+                } else {
+                    thermalRateEl.textContent = 'Calculating...';
+                    thermalRateEl.className = 'status-value';
+                }
+            } else {
+                thermalItem.style.display = 'none';
             }
             
             // Update timestamp
@@ -469,6 +579,46 @@
                 }
             } catch (error) {
                 msgEl.innerHTML = '<div class="error">Error: ' + error.message + '</div>';
+                console.error('Error:', error);
+            }
+        });
+
+        // Energy saving override functionality
+        document.getElementById('overrideBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('overrideBtn');
+            const msgEl = document.getElementById('message');
+            
+            // Disable button during request
+            btn.disabled = true;
+            btn.textContent = 'Activating...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/energy-saving`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ override: true })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    msgEl.innerHTML = `<div class="success">✓ ${result.message}</div>`;
+                    
+                    // Show countdown timer
+                    const duration = result.override_duration_hours || 1;
+                    btn.textContent = `Override Active (${duration}h remaining)`;
+                    
+                    setTimeout(() => {
+                        msgEl.innerHTML = '';
+                    }, 3000);
+                } else {
+                    msgEl.innerHTML = '<div class="error">Failed to activate override</div>';
+                    btn.disabled = false;
+                    btn.textContent = 'Override Energy Save (1hr)';
+                }
+            } catch (error) {
+                msgEl.innerHTML = '<div class="error">Error: ' + error.message + '</div>';
+                btn.disabled = false;
+                btn.textContent = 'Override Energy Save (1hr)';
                 console.error('Error:', error);
             }
         });

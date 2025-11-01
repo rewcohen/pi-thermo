@@ -14,7 +14,6 @@ import json
 import signal
 import threading
 import socket
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from collections import deque
@@ -55,7 +54,7 @@ RELAY_PIN = 13
 WEB_PORT = 5002
 WEB_HOST = "0.0.0.0"
 
-# Default configuration (optimized for Pi Zero 2W with energy saving)
+# Default configuration (optimized for Pi Zero 2W)
 DEFAULT_CONFIG = {
     "target_temp_f": 72.0,         # Target temperature in °F
     "hysteresis": 1.0,             # Hysteresis band (±°F)
@@ -68,11 +67,6 @@ DEFAULT_CONFIG = {
     "display_update_interval": 2.0, # Update display every N seconds (slower for Pi Zero 2W)
     "relay_min_on_time": 2.0,      # Minimum relay ON duration (seconds)
     "relay_min_off_time": 2.0,     # Minimum relay OFF duration (seconds)
-    "outside_temp_check_interval": 900,  # Check outside temp every 15 minutes
-    "thermal_analysis_enabled": True,     # Enable thermal analysis
-    "energy_saving_min_temp": 60.0,       # Minimum temp during energy saving
-    "energy_saving_override_duration": 3600,  # Override duration in seconds (1 hour)
-    "thermal_data_retention_hours": 24,    # How long to keep thermal data
 }
 
 # ============================================================================
@@ -94,86 +88,22 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def get_ip_address():
-    """Get the local IP address - avoid loopback and return actual network IP"""
+    """Get the local IP address - optimized for Pi Zero 2W"""
     try:
-        # Try multiple methods to get actual network IP (not loopback)
-        
-        # Method 1: Connect to external address and get local socket address
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(2)
-        try:
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            if ip and not ip.startswith('127.') and not ip.startswith('0.'):
-                s.close()
-                return ip
-        except:
-            pass
-        s.close()
-        
-        # Method 2: Try common network interface addresses
-        possible_ips = ['192.168.1.100', '192.168.0.100', '10.0.0.100', '172.16.0.100']
-        for test_ip in possible_ips:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(1)
-            try:
-                s.bind((test_ip, 0))
-                s.close()
-                return test_ip
-            except:
-                s.close()
-                continue
-        
-        # Method 3: Fallback to hostname method with validation
+        # More efficient approach for Pi Zero 2W
         hostname = socket.gethostname()
-        try:
-            ip = socket.gethostbyname(hostname)
-            if ip and not ip.startswith('127.') and not ip.startswith('0.'):
-                return ip
-        except:
-            pass
-        
-        # Default fallback (common for home networks)
-        return "192.168.1.100"
-        
-    except Exception as e:
-        logger.error(f"Error getting IP address: {e}")
-        return "192.168.1.100"
-
-def get_outside_temperature():
-    """Get outside temperature from wttr.in API"""
-    try:
-        # Use curl to fetch temperature for zipcode 18960
-        result = subprocess.run(
-            ['curl', '-s', 'https://wttr.in/18960?format=%t&u'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode == 0:
-            temp_str = result.stdout.strip()
-            # Parse format like "+45°F" or "32°F"
-            if '°F' in temp_str:
-                temp_str = temp_str.replace('°F', '').strip()
-                # Handle signs like + or -
-                if temp_str.startswith('+'):
-                    temp_str = temp_str[1:]
-                try:
-                    temp_f = float(temp_str)
-                    logger.info(f"Outside temperature: {temp_f}°F")
-                    return temp_f
-                except ValueError:
-                    logger.error(f"Could not parse temperature: {temp_str}")
-        else:
-            logger.error(f"curl failed with return code: {result.returncode}")
-            
-    except subprocess.TimeoutExpired:
-        logger.error("Timeout fetching outside temperature")
-    except Exception as e:
-        logger.error(f"Error fetching outside temperature: {e}")
-    
-    return None
+        ip = socket.gethostbyname(hostname)
+        # Only return if it's a private/local IP
+        if ip.startswith(('192.168.', '10.', '172.', '127.')):
+            return ip
+        # Fallback to socket method
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "192.168.1.100"  # Default for most home networks
 
 # ============================================================================
 # Event Logger
@@ -226,92 +156,6 @@ class EventLogger:
         """Get most recent events"""
         with self.lock:
             return list(reversed(list(self.events)[-limit:]))
-
-# ============================================================================
-# Thermal Analysis
-# ============================================================================
-
-class ThermalAnalysis:
-    """Track and analyze heating/cooling rates"""
-    
-    def __init__(self, max_samples=50):
-        self.max_samples = max_samples
-        self.temperature_data = deque(maxlen=max_samples)
-        self.heating_rates = deque(maxlen=20)
-        self.cooling_rates = deque(maxlen=20)
-        self.lock = Lock()
-        
-        # Current rates
-        self.heating_rate_seconds_per_degree = None
-        self.cooling_rate_seconds_per_degree = None
-    
-    def add_temperature_reading(self, temp_f, heating_on):
-        """Add temperature reading with heating state"""
-        now = time.time()
-        reading = {
-            "timestamp": now,
-            "temperature_f": temp_f,
-            "heating_on": heating_on
-        }
-        
-        with self.lock:
-            self.temperature_data.append(reading)
-            
-            # Calculate rates if we have enough data
-            if len(self.temperature_data) >= 3:
-                self._calculate_rates()
-    
-    def _calculate_rates(self):
-        """Calculate heating and cooling rates from data"""
-        data = list(self.temperature_data)
-        
-        # Heating rates (when heating turns on and temperature rises)
-        for i in range(1, len(data)):
-            if not data[i-1]["heating_on"] and data[i]["heating_on"]:
-                # Heating just turned on - look for temperature rise
-                for j in range(i, min(i+10, len(data))):
-                    if data[j]["temperature_f"] and data[i]["temperature_f"]:
-                        temp_change = data[j]["temperature_f"] - data[i]["temperature_f"]
-                        time_change = data[j]["timestamp"] - data[i]["timestamp"]
-                        
-                        if temp_change > 0.5 and time_change > 60:  # At least 0.5°F change over 1 minute
-                            rate = time_change / temp_change  # seconds per degree
-                            if 300 < rate < 3600:  # Reasonable range: 5 min to 1 hour per degree
-                                self.heating_rates.append(rate)
-                                break
-        
-        # Cooling rates (when heating turns off and temperature falls)
-        for i in range(1, len(data)):
-            if data[i-1]["heating_on"] and not data[i]["heating_on"]:
-                # Heating just turned off - look for temperature fall
-                for j in range(i, min(i+15, len(data))):
-                    if data[j]["temperature_f"] and data[i]["temperature_f"]:
-                        temp_change = data[i]["temperature_f"] - data[j]["temperature_f"]
-                        time_change = data[j]["timestamp"] - data[i]["timestamp"]
-                        
-                        if temp_change > 0.5 and time_change > 120:  # At least 0.5°F change over 2 minutes
-                            rate = time_change / temp_change  # seconds per degree
-                            if 600 < rate < 7200:  # Reasonable range: 10 min to 2 hours per degree
-                                self.cooling_rates.append(rate)
-                                break
-        
-        # Update current averages
-        if len(self.heating_rates) >= 3:
-            self.heating_rate_seconds_per_degree = sum(self.heating_rates) / len(self.heating_rates)
-        
-        if len(self.cooling_rates) >= 3:
-            self.cooling_rate_seconds_per_degree = sum(self.cooling_rates) / len(self.cooling_rates)
-    
-    def get_thermal_data(self):
-        """Get current thermal analysis data"""
-        with self.lock:
-            return {
-                "heating_rate_seconds_per_degree": self.heating_rate_seconds_per_degree,
-                "cooling_rate_seconds_per_degree": self.cooling_rate_seconds_per_degree,
-                "heating_samples": len(self.heating_rates),
-                "cooling_samples": len(self.cooling_rates),
-                "total_samples": len(self.temperature_data)
-            }
 
 # ============================================================================
 # PID Controller
@@ -517,8 +361,8 @@ class OLEDDisplay:
             logger.error(f"Failed to initialize OLED display: {e}")
             self.device = None
     
-    def show_status(self, current_temp_f, target_temp_f, humidity, relay_on, pid_output=0.0, outside_temp=None, energy_saving_active=False, thermal_data=None):
-        """Display thermostat status with energy saving mode"""
+    def show_status(self, current_temp_f, target_temp_f, humidity, relay_on, pid_output=0.0):
+        """Display thermostat status"""
         if not self.device:
             return
         
@@ -527,48 +371,22 @@ class OLEDDisplay:
             system_status = "***SYSTEM ON***" if relay_on else "***SYSTEM OFF***"
             
             with canvas(self.device) as draw:
-                # Line 1: System status (yellow)
+                # System status as title (yellow)
                 draw.text((0, 0), system_status, font=self.font, fill="yellow")
                 
-                # Line 2: IP address (yellow)
-                draw.text((0, 10), f"IP: {ip_address}", font=self.font, fill="yellow")
+                # IP address (yellow for first 15 pixels)
+                draw.text((0, 15), f"IP: {ip_address}", font=self.font, fill="yellow")
                 
-                # Line 3: Inside temperature
-                inside_str = f"Inside: {current_temp_f:.1f}F" if current_temp_f is not None else "Inside: N/A"
-                draw.text((0, 20), inside_str, font=self.font, fill="white")
+                # Current temperature and setpoint
+                temp_str = f"Curr: {current_temp_f:.1f}F" if current_temp_f is not None else "Curr: N/A"
+                draw.text((0, 20), temp_str, font=self.font, fill="white")
                 
-                # Line 4: Outside temperature
-                if outside_temp is not None:
-                    outside_str = f"Outside: {outside_temp:.1f}F"
-                else:
-                    outside_str = "Outside: --F"
-                draw.text((0, 30), outside_str, font=self.font, fill="white")
+                target_str = f"Target: {target_temp_f:.1f}F"
+                draw.text((0, 30), target_str, font=self.font, fill="white")
                 
-                # Line 5: Energy saving status or target temperature
-                if energy_saving_active:
-                    draw.text((0, 40), "ENERGY SAVE", font=self.font, fill="red")
-                else:
-                    target_str = f"Target: {target_temp_f:.1f}F"
-                    draw.text((0, 40), target_str, font=self.font, fill="white")
-                
-                # Line 6: Thermal rate when available
-                if thermal_data:
-                    if relay_on and thermal_data.get("heating_rate_seconds_per_degree"):
-                        rate_min = thermal_data["heating_rate_seconds_per_degree"] / 60
-                        rate_str = f"Heat: {rate_min:.1f}°/min"
-                        draw.text((0, 50), rate_str, font=self.font, fill="white")
-                    elif not relay_on and thermal_data.get("cooling_rate_seconds_per_degree"):
-                        rate_min = thermal_data["cooling_rate_seconds_per_degree"] / 60
-                        rate_str = f"Cool: {rate_min:.1f}°/min"
-                        draw.text((0, 50), rate_str, font=self.font, fill="white")
-                    else:
-                        # Humidity fallback if no thermal data
-                        hum_str = f"Humidity: {humidity:.0f}%" if humidity is not None else "Humidity: N/A"
-                        draw.text((0, 50), hum_str, font=self.font, fill="white")
-                else:
-                    # Humidity fallback
-                    hum_str = f"Humidity: {humidity:.0f}%" if humidity is not None else "Humidity: N/A"
-                    draw.text((0, 50), hum_str, font=self.font, fill="white")
+                # Humidity
+                hum_str = f"Humidity: {humidity:.0f}%" if humidity is not None else "Humidity: N/A"
+                draw.text((0, 40), hum_str, font=self.font, fill="white")
         
         except Exception as e:
             logger.error(f"Error updating OLED display: {e}")
@@ -660,7 +478,7 @@ def save_config(config):
 # ============================================================================
 
 class ThermostatController:
-    """Main thermostat controller with energy saving mode"""
+    """Main thermostat controller"""
     
     def __init__(self):
         self.config = load_config()
@@ -669,28 +487,17 @@ class ThermostatController:
         self.display = None
         self.pid = None
         self.event_logger = EventLogger()
-        self.thermal_analysis = None
         self.running = True
         self.last_sensor_read = 0
         self.current_temp_f = None
         self.current_humidity = None
-        self.outside_temp = None
-        self.last_outside_temp_check = 0
         self.config_lock = Lock()
-        
-        # Energy saving mode variables
-        self.energy_saving_active = False
-        self.energy_saving_override = False
-        self.override_start_time = 0
         
         # Initialize components
         try:
             self.sensor = AHT10Sensor()
             self.relay = RelayControl()
             self.display = OLEDDisplay()
-            
-            # Initialize thermal analysis
-            self.thermal_analysis = ThermalAnalysis()
             
             # Initialize PID controller
             self.pid = PIDController(
@@ -701,10 +508,7 @@ class ThermostatController:
                 max_output=self.config["pid_max_output"]
             )
             
-            # Initial outside temperature check
-            self.update_outside_temperature()
-            
-            logger.info("Thermostat controller with energy saving initialized successfully")
+            logger.info("Thermostat controller initialized successfully")
         
         except Exception as e:
             logger.error(f"Failed to initialize thermostat: {e}")
@@ -718,97 +522,25 @@ class ThermostatController:
             if temp_f is not None:
                 self.current_temp_f = temp_f
                 self.current_humidity = humidity
-                
-                # Add to thermal analysis
-                if self.thermal_analysis:
-                    self.thermal_analysis.add_temperature_reading(temp_f, self.relay.get_state())
-                
                 return True
             return False
         except Exception as e:
             logger.error(f"Error reading temperature: {e}")
             return False
     
-    def update_outside_temperature(self):
-        """Update outside temperature with caching"""
-        now = time.time()
-        check_interval = self.config.get("outside_temp_check_interval", 900)  # 15 minutes default
-        
-        if now - self.last_outside_temp_check >= check_interval or self.outside_temp is None:
-            outside_temp = get_outside_temperature()
-            if outside_temp is not None:
-                self.outside_temp = outside_temp
-                self.last_outside_temp_check = now
-                logger.info(f"Updated outside temperature: {outside_temp:.1f}°F")
-            else:
-                logger.warning("Failed to fetch outside temperature")
-    
-    def check_energy_saving_mode(self):
-        """Check if energy saving mode should be active"""
-        if self.energy_saving_override:
-            # Check if override period has expired
-            override_duration = self.config.get("energy_saving_override_duration", 3600)
-            if time.time() - self.override_start_time >= override_duration:
-                self.energy_saving_override = False
-                logger.info("Energy saving override expired, returning to normal mode")
-        
-        # Don't apply energy saving if override is active
-        if self.energy_saving_override:
-            self.energy_saving_active = False
-            return False
-        
-        # Energy saving logic: if outside >= inside, don't heat (except minimum temp)
-        if self.outside_temp is not None and self.current_temp_f is not None:
-            if self.outside_temp >= self.current_temp_f:
-                self.energy_saving_active = True
-                return True
-            else:
-                self.energy_saving_active = False
-        
-        return False
-    
-    def set_energy_saving_override(self):
-        """Override energy saving mode for specified duration"""
-        self.energy_saving_override = True
-        self.override_start_time = time.time()
-        self.energy_saving_active = False
-        override_duration = self.config.get("energy_saving_override_duration", 3600)
-        logger.info(f"Energy saving override activated for {override_duration/3600:.1f} hours")
-    
     def control_heating(self):
-        """Main control logic using hysteresis with energy saving mode"""
+        """Main control logic using hysteresis"""
         if self.current_temp_f is None:
             logger.warning("Cannot control heating - no temperature reading")
             return
-        
-        # Check energy saving mode
-        is_energy_saving = self.check_energy_saving_mode()
         
         with self.config_lock:
             target = self.config["target_temp_f"]
             hysteresis = self.config["hysteresis"]
             min_on = self.config["relay_min_on_time"]
             min_off = self.config["relay_min_off_time"]
-            min_temp = self.config.get("energy_saving_min_temp", 60.0)
         
-        # Energy saving override
-        if is_energy_saving:
-            # Only allow heating to maintain minimum temperature
-            if self.current_temp_f <= min_temp and not self.relay.get_state():
-                # Check minimum off time
-                if self.relay.time_in_state() >= min_off:
-                    self.relay.turn_on()
-                    logger.info(f"Energy saving active, minimum temp reached {self.current_temp_f:.1f}°F, turning on heat")
-                    self.event_logger.log_event("on", self.current_temp_f, self.current_humidity)
-            elif self.relay.get_state() and self.current_temp_f >= (min_temp + 1.0):
-                # Turn off when above minimum temp + safety margin
-                if self.relay.time_in_state() >= min_on:
-                    self.relay.turn_off()
-                    logger.info(f"Energy saving active, minimum temp restored {self.current_temp_f:.1f}°F, turning off heat")
-                    self.event_logger.log_event("off", self.current_temp_f, self.current_humidity)
-            return
-        
-        # Normal control logic when not in energy saving mode
+        # Relay on/off decision: use threshold-based switching with hysteresis
         time_in_state = self.relay.time_in_state()
         
         if self.relay.get_state():
@@ -825,25 +557,18 @@ class ThermostatController:
                 self.event_logger.log_event("on", self.current_temp_f, self.current_humidity)
     
     def update_display(self):
-        """Update OLED display with energy saving and thermal data"""
+        """Update OLED display - optimized for Pi Zero 2W"""
         try:
             with self.config_lock:
                 target_temp = self.config["target_temp_f"]
             
-            # Get thermal data if available
-            thermal_data = None
-            if self.thermal_analysis and self.config.get("thermal_analysis_enabled", True):
-                thermal_data = self.thermal_analysis.get_thermal_data()
-            
+            # Simplified for Pi Zero 2W - removed unnecessary PID calculation
             self.display.show_status(
                 self.current_temp_f,
                 target_temp,
                 self.current_humidity,
                 self.relay.get_state(),
-                0.0,  # PID output not used anymore
-                self.outside_temp,
-                self.energy_saving_active,
-                thermal_data
+                0.0  # PID output not used anymore
             )
         except Exception as e:
             logger.error(f"Error updating display: {e}")
@@ -889,20 +614,11 @@ class ThermostatController:
         with self.config_lock:
             target_temp = self.config["target_temp_f"]
         
-        # Get thermal data if available
-        thermal_data = None
-        if self.thermal_analysis and self.config.get("thermal_analysis_enabled", True):
-            thermal_data = self.thermal_analysis.get_thermal_data()
-        
         return {
             "current_temp_f": round(self.current_temp_f, 1) if self.current_temp_f else None,
             "target_temp_f": target_temp,
             "humidity": round(self.current_humidity, 1) if self.current_humidity else None,
             "heating_on": self.relay.get_state(),
-            "outside_temp_f": round(self.outside_temp, 1) if self.outside_temp else None,
-            "energy_saving_active": self.energy_saving_active,
-            "energy_saving_override": self.energy_saving_override,
-            "thermal_data": thermal_data,
             "timestamp": datetime.now().isoformat()
         }
     
@@ -926,9 +642,6 @@ class ThermostatController:
                         self.control_heating()
                         last_display_update = 0  # Force display update
                     self.last_sensor_read = now
-                    
-                    # Check outside temperature less frequently (every sensor read)
-                    self.update_outside_temperature()
                 
                 # Update display at configured interval
                 if now - last_display_update >= display_interval:
@@ -1041,58 +754,6 @@ def create_app():
         if controller:
             events = controller.event_logger.get_events(limit)
             return jsonify({"events": events})
-        return jsonify({"error": "Controller not initialized"}), 500
-    
-    @app.route('/api/outside-temp', methods=['GET'])
-    def api_outside_temp():
-        """Get current outside temperature"""
-        if controller:
-            return jsonify({
-                "outside_temp_f": round(controller.outside_temp, 1) if controller.outside_temp else None,
-                "last_check": controller.last_outside_temp_check,
-                "timestamp": datetime.now().isoformat()
-            })
-        return jsonify({"error": "Controller not initialized"}), 500
-    
-    @app.route('/api/energy-saving', methods=['GET', 'POST'])
-    def api_energy_saving():
-        """Get or set energy saving mode status"""
-        if not controller:
-            return jsonify({"error": "Controller not initialized"}), 500
-        
-        if request.method == 'GET':
-            return jsonify({
-                "energy_saving_active": controller.energy_saving_active,
-                "energy_saving_override": controller.energy_saving_override,
-                "override_start_time": controller.override_start_time,
-                "outside_temp_f": round(controller.outside_temp, 1) if controller.outside_temp else None,
-                "inside_temp_f": round(controller.current_temp_f, 1) if controller.current_temp_f else None,
-                "timestamp": datetime.now().isoformat()
-            })
-        elif request.method == 'POST':
-            data = request.get_json() or {}
-            
-            # Handle override request
-            if data.get('override', False):
-                controller.set_energy_saving_override()
-                return jsonify({
-                    "status": "ok",
-                    "message": "Energy saving override activated",
-                    "override_duration_hours": controller.config.get("energy_saving_override_duration", 3600) / 3600
-                })
-            else:
-                return jsonify({"error": "Only override action supported"}), 400
-    
-    @app.route('/api/thermal-data', methods=['GET'])
-    def api_thermal_data():
-        """Get thermal analysis data"""
-        if controller and controller.thermal_analysis:
-            thermal_data = controller.thermal_analysis.get_thermal_data()
-            return jsonify({
-                "thermal_data": thermal_data,
-                "energy_saving_active": controller.energy_saving_active,
-                "timestamp": datetime.now().isoformat()
-            })
         return jsonify({"error": "Controller not initialized"}), 500
     
     return app
