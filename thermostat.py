@@ -511,7 +511,10 @@ class OLEDDisplay:
         try:
             serial = i2c(port=bus, address=address)
             self.device = ssd1306(serial)
-            self.font = ImageFont.load_default()
+            self.font = ImageFont.load_default()  # Use normal size font
+            self.show_temp = True  # For temp/humidity cycling
+            self.last_cycle_time = time.time()
+            self.cycle_interval = 5.0  # Cycle every 5 seconds
             logger.info(f"OLED display initialized on I2C bus {bus}, address 0x{address:02x}")
         except Exception as e:
             logger.error(f"Failed to initialize OLED display: {e}")
@@ -527,48 +530,50 @@ class OLEDDisplay:
             system_status = "***SYSTEM ON***" if relay_on else "***SYSTEM OFF***"
             
             with canvas(self.device) as draw:
-                # Line 1: System status (yellow)
-                draw.text((0, 0), system_status, font=self.font, fill="yellow")
+                # Check if we need to cycle temp/humidity display
+                now = time.time()
+                if now - self.last_cycle_time >= self.cycle_interval:
+                    self.show_temp = not self.show_temp
+                    self.last_cycle_time = now
                 
-                # Line 2: IP address (yellow)
-                draw.text((0, 10), f"IP: {ip_address}", font=self.font, fill="yellow")
+                # Line 1: System status (normal font, yellow for first 16 pixels)
+                draw.text((0, 2), system_status, font=self.font, fill="yellow")
                 
-                # Line 3: Inside temperature
-                inside_str = f"Inside: {current_temp_f:.1f}F" if current_temp_f is not None else "Inside: N/A"
-                draw.text((0, 20), inside_str, font=self.font, fill="white")
+                # Line 2: IP address (yellow for first 16 pixels)
+                draw.text((0, 18), f"IP: {ip_address}", font=self.font, fill="yellow")
+                
+                # Line 3: Combined temp/humidity cycling (below yellow zone)
+                if self.show_temp:
+                    temp_str = f"Inside: {current_temp_f:.1f}F" if current_temp_f is not None else "Inside: N/A"
+                    draw.text((0, 32), temp_str, font=self.font, fill="white")
+                else:
+                    hum_str = f"Humidity: {humidity:.0f}%" if humidity is not None else "Humidity: N/A"
+                    draw.text((0, 32), hum_str, font=self.font, fill="white")
                 
                 # Line 4: Outside temperature
                 if outside_temp is not None:
                     outside_str = f"Outside: {outside_temp:.1f}F"
                 else:
                     outside_str = "Outside: --F"
-                draw.text((0, 30), outside_str, font=self.font, fill="white")
+                draw.text((0, 42), outside_str, font=self.font, fill="white")
                 
                 # Line 5: Energy saving status or target temperature
                 if energy_saving_active:
-                    draw.text((0, 40), "ENERGY SAVE", font=self.font, fill="red")
+                    draw.text((0, 52), "ENERGY SAVE", font=self.font, fill="red")
                 else:
                     target_str = f"Target: {target_temp_f:.1f}F"
-                    draw.text((0, 40), target_str, font=self.font, fill="white")
+                    draw.text((0, 52), target_str, font=self.font, fill="white")
                 
-                # Line 6: Thermal rate when available
-                if thermal_data:
+                # Line 6: Thermal rate when available (only if temp shown, otherwise skip)
+                if self.show_temp and thermal_data:
                     if relay_on and thermal_data.get("heating_rate_seconds_per_degree"):
                         rate_min = thermal_data["heating_rate_seconds_per_degree"] / 60
                         rate_str = f"Heat: {rate_min:.1f}°/min"
-                        draw.text((0, 50), rate_str, font=self.font, fill="white")
+                        draw.text((0, 62), rate_str, font=self.font, fill="white")
                     elif not relay_on and thermal_data.get("cooling_rate_seconds_per_degree"):
                         rate_min = thermal_data["cooling_rate_seconds_per_degree"] / 60
                         rate_str = f"Cool: {rate_min:.1f}°/min"
-                        draw.text((0, 50), rate_str, font=self.font, fill="white")
-                    else:
-                        # Humidity fallback if no thermal data
-                        hum_str = f"Humidity: {humidity:.0f}%" if humidity is not None else "Humidity: N/A"
-                        draw.text((0, 50), hum_str, font=self.font, fill="white")
-                else:
-                    # Humidity fallback
-                    hum_str = f"Humidity: {humidity:.0f}%" if humidity is not None else "Humidity: N/A"
-                    draw.text((0, 50), hum_str, font=self.font, fill="white")
+                        draw.text((0, 62), rate_str, font=self.font, fill="white")
         
         except Exception as e:
             logger.error(f"Error updating OLED display: {e}")
