@@ -1,0 +1,13 @@
+{
+  "target_temp_f": 72.0,
+  "hysteresis": 1.0,
+  "pid_kp": 0.5,
+  "pid_ki": 0.1,
+  "pid_kd": 0.2,
+  "pid_max_output": 1.0,
+  "pid_min_output": 0.0,
+  "sensor_read_interval": 5.0,
+  "display_update_interval": 1.0,
+  "relay_min_on_time": 2.0,
+  "relay_min_off_time": 2.0
+}

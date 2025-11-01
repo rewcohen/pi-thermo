@@ -1,0 +1,10 @@
+# Auto convert CRLF to LF on commit for bash scripts
+*.sh text eol=lf
+*.py text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary

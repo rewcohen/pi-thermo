@@ -1,0 +1,213 @@
+================================================================================
+PI THERMOSTAT - MANUAL INSTALLATION GUIDE
+================================================================================
+
+If you prefer to install manually instead of using the automated installer:
+
+STEP 1: Update System
+================================================================================
+sudo apt-get update
+sudo apt-get upgrade
+
+
+STEP 2: Install System Dependencies
+================================================================================
+sudo apt-get install -y \
+    python3-pip \
+    python3-dev \
+    python3-smbus \
+    python3-rpi.gpio \
+    python3-venv \
+    i2c-tools \
+    build-essential \
+    libopenjp2-7 \
+    libtiff5 \
+    libjasper1 \
+    libharfbuzz0b \
+    libwebp6 \
+    libtk8.6 \
+    libtcl8.6
+
+
+STEP 3: Create Virtual Environment
+================================================================================
+python3 -m venv ~/pi-thermo-env
+source ~/pi-thermo-env/bin/activate
+
+
+STEP 4: Upgrade pip
+================================================================================
+pip install --upgrade pip
+
+
+STEP 5: Install Python Packages
+================================================================================
+Option A - Using requirements.txt:
+  pip install -r ~/pi-thermo/requirements.txt
+
+Option B - Manual installation:
+  pip install smbus2==0.4.2
+  pip install luma.oled==3.12.0
+  pip install luma.core==1.19.1
+  pip install pillow==10.1.0
+  pip install flask==3.0.0
+  pip install RPi.GPIO==0.7.0
+
+
+STEP 6: Verify Installation
+================================================================================
+python3 -c "import smbus2; print('[OK] smbus2')"
+python3 -c "import RPi.GPIO; print('[OK] RPi.GPIO')"
+python3 -c "from luma.oled.device import ssd1306; print('[OK] luma.oled')"
+python3 -c "from flask import Flask; print('[OK] flask')"
+
+
+STEP 7: Enable I2C Interface
+================================================================================
+sudo raspi-config
+  Navigate to: Interface Options → I2C → Yes
+  Reboot when prompted
+
+
+STEP 8: Verify Hardware Connections
+================================================================================
+i2cdetect -y 1    # OLED should show at address 0x3c
+i2cdetect -y 3    # AHT10 sensor should show at address 0x38
+
+
+STEP 9: Create Required Directories
+================================================================================
+mkdir -p ~/pi-thermo/templates
+touch ~/pi-thermo/thermo.log
+touch ~/pi-thermo/events.log
+
+
+STEP 10: Make Scripts Executable
+================================================================================
+chmod +x ~/pi-thermo/thermostat.py
+chmod +x ~/pi-thermo/execute.sh
+chmod +x ~/pi-thermo/activate.sh
+
+
+STEP 11: Test Run
+================================================================================
+source ~/pi-thermo/activate.sh
+python3 ~/pi-thermo/thermostat.py
+
+(Press Ctrl+C to stop)
+
+
+STEP 12: Optional - Install as SystemD Service
+================================================================================
+sudo ~/pi-thermo/install_service.sh
+sudo systemctl start thermostat
+sudo systemctl enable thermostat
+
+
+VERIFICATION CHECKLIST
+================================================================================
+[ ] System updated
+[ ] Dependencies installed
+[ ] Virtual environment created
+[ ] Python packages installed
+[ ] I2C enabled
+[ ] Hardware verified (i2cdetect shows 0x38 and 0x3c)
+[ ] Directories created
+[ ] Scripts executable
+[ ] Test run successful
+[ ] Web interface accessible at http://<pi-ip>:5000
+
+
+QUICK START AFTER INSTALLATION
+================================================================================
+1. Edit configuration:
+   nano ~/pi-thermo/config.json
+
+2. Start the thermostat:
+   source ~/pi-thermo/activate.sh
+   python3 ~/pi-thermo/thermostat.py
+
+3. Access web dashboard:
+   Open browser: http://<your-pi-ip>:5000
+
+4. Monitor logs:
+   tail -f ~/pi-thermo/thermo.log
+   tail -f ~/pi-thermo/events.log
+
+
+TROUBLESHOOTING
+================================================================================
+
+Module not found:
+  source ~/pi-thermo/activate.sh
+  pip install -r ~/pi-thermo/requirements.txt
+
+I2C device not found:
+  sudo raspi-config  (enable I2C)
+  sudo reboot
+  i2cdetect -y 1 && i2cdetect -y 3
+
+GPIO permission denied:
+  sudo usermod -a -G gpio $USER
+  (log out and back in)
+
+Web server not responding:
+  Check if thermostat is running:
+    ps aux | grep thermostat.py
+  Check logs:
+    tail -f ~/pi-thermo/thermo.log
+
+
+MANUAL ACTIVATION (Each Time)
+================================================================================
+To activate the virtual environment and run manually:
+
+source ~/pi-thermo/activate.sh
+python3 ~/pi-thermo/thermostat.py
+
+Or directly:
+
+~/pi-thermo-env/bin/python3 ~/pi-thermo/thermostat.py
+
+
+SYSTEM SERVICE MANAGEMENT
+================================================================================
+If installed as service:
+
+Start:      sudo systemctl start thermostat
+Stop:       sudo systemctl stop thermostat
+Restart:    sudo systemctl restart thermostat
+Status:     sudo systemctl status thermostat
+Logs:       sudo journalctl -u thermostat -f
+Auto-start: sudo systemctl enable thermostat
+No auto:    sudo systemctl disable thermostat
+
+
+FILE LOCATIONS
+================================================================================
+Main app:        ~/pi-thermo/thermostat.py
+Config:          ~/pi-thermo/config.json
+Web interface:   ~/pi-thermo/templates/index.html
+App logs:        ~/pi-thermo/thermo.log
+Event logs:      ~/pi-thermo/events.log
+Virtual env:     ~/pi-thermo-env/
+Installer log:   ~/pi-thermo/install.log
+
+
+USEFUL COMMANDS
+================================================================================
+Find Pi IP:               hostname -I
+Check temperature sensor: i2cdetect -y 3 | grep 38
+Check OLED display:       i2cdetect -y 1 | grep 3c
+View GPIO pins:           gpio readall
+Test GPIO 13:             gpio -1 mode 13 out && gpio -1 write 13 0
+
+
+SUPPORT
+================================================================================
+For issues, provide:
+1. Output of: cat ~/pi-thermo/install.log
+2. Recent logs: tail -50 ~/pi-thermo/thermo.log
+3. Events: tail -20 ~/pi-thermo/events.log
+4. Hardware: i2cdetect -y 1 && i2cdetect -y 3
+5. GPIO: gpio readall
